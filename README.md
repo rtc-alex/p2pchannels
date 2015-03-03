@@ -1,6 +1,8 @@
 p2pchannels
 ===========
 
+This module will use Distributed Hash Tables to find other similar hosts/servers/nodejs-scripts, and will make a JSON data channel to them. Currenly only supports the BitTorrent DHT network.
+
 How to use
 ----------
 
@@ -25,18 +27,22 @@ You can use multiple strings for discovery:
 	p2pChannels.discover('My Cool Service protocol version 0.9'); // We are backwards compatible.
 	p2pChannels.discover('Anther Cool Service'); // Compatible with another service too.
 
-Now, BitTorrent DHT will be used for announcing and trying to find others. Note, this might take some time! As you probably know, it might take some time for BitTorrent downloads to start, and the same goes for those servers to find each other.
+BitTorrent DHT will be used for announcing and trying to find others. As you probably know, it might take some time for BitTorrent downloads to start, and the same goes for those NodeJS servers to find each other...
 
 When another server is found, they will do some handshaking, and when the connection is established, an event will emit with an object representing the remote:
 
-	p2pChannels.on('remote', function (remoteid, socket) {
+	p2pChannels.on('remote', function (remote) {
 
-		// The remote has an unique identifier:
-		console.log('Connection to remote ' + remoteid + ' established.');
+		remoote.on('data', function (msg) {
+			console.log(msg); // Output incoming data.
+		});
 
-		// socket is the socket.io socket connected to the remote.
-
-		socket.send('Hello, dude!');
+		remote.send('Hello, dude!');
+		remote.send({ yo: 'ppl' }); // Send anything that is JSON.stringify-able.
+		
+		remote.on('end', function () {
+			console.log('Connection closed.');
+		});
 	});
 
 More discover strings can be added later:
