@@ -13,7 +13,7 @@ function P2PChannels() {
 	EventEmitter(this);
 
 	this._discoveryServices = [];
-	this._remotes = {};
+	this._remotes = [];
 	this.subjects = [];
 	this.uuid = uuid.v4();
 }
@@ -27,27 +27,28 @@ P2PChannels.BitTorrentDHT = require('./lib/bittorrentdht.js');
 P2PChannels.prototype.addDiscoveryService = function (obj) {
 	this._discoveryServices.push(obj);
 	obj.start(this);
-	obj.on('discovery', function (ip, port) {
-		console.log('Serivce discovered at ' + ip + ':' + port + '.');
+	obj.on('discovery', function (ip, port, subject) {
+		//console.log('Serivce discovered at ' + ip + ':' + port + '. Subject: ' + subject);
 		this.connect(ip, port);
 	}.bind(this));
 };
 
 P2PChannels.prototype.connect = function (ip, port) {
-	console.log('P2PChannels.connect(' + ip + ',' + port + ');');
+	ip = '127.0.0.1';
+	//console.log('P2PChannels.connect(' + ip + ',' + port + ');');
 	port = parseInt(port);
 	var addr = ip + ':' + port;
 
 	var socket = socketioClient.connect('http://' + addr);
 	socket.on('connect_error', function () {
-		console.log('connect_error', addr, arguments);
+		//console.log('connect_error', addr, arguments);
 	});
 	socket.on('connect_timeout', function () {
-		console.log('connect_timeout', arguments);
+		//console.log('connect_timeout', arguments);
 	});
 	socket.on('connect', function () {
-		console.log('socketioClient connect.');
-		this._handshakeSocket(socket);
+		//console.log('socketioClient connect.');
+		this._handshakeSocket(socket, "client");
 	}.bind(this));
 };
 
@@ -60,36 +61,78 @@ P2PChannels.prototype.discover = function (subject) {
 	return true;
 };
 
-P2PChannels.prototype._handshakeSocket = function (socket) {
-	socket.once('data', function (msg) {
-		if (msg.substr(0, 13) !== 'ssdhtv1_init;' || !verifyRFC4122UUID(msg.substr(13))) {
-			socket.disconnect();
-			return;
-		}
-		var remoteid = msg.substr(13);
+P2PChannels.prototype._handshakeSocket = function (socket, role) {
+	// role is "client" or "server".
 
-		if (typeof (this._remotes[remoteid]) !== 'undefined') {
-			console.error(remoteid + ' is already a remote.');
+	var addRemote = function (remoteid, socket) {
+		console.log('Added ' + remoteid + ' to remotes.');
+		this._remotes[remoteid] = socket;
+		this.emit('remote', remoteid, socket);
+		socket.on('message', function (msg) {
+			this.emit('message', remoteid, socket, msg);
+		}.bind(this));
+		socket.send(this.protocolVersionString + '_letsgo');
+	}.bind(this);
+
+	socket.once('message', function (msg) {
+		//console.log('message', arguments);
+		var msg = msg.split(';', 2);
+		var remoteid = msg[1];
+		if (msg[0] !== this.protocolVersionString + '_init') {
+			console.log('Protocol error #1.');
 			socket.disconnect();
 			return;
 		}
-		console.error('Added ' + remoteid + ' to remotes.');
-		this._remotes[remoteid] = new Remote(remoteid, socket);
-		this.emit('remote', this._remotes[remoteid]);
-		
+		if (!verifyRFC4122UUID(remoteid)) {
+			//console.log('Not a valid RFC 4122 UUID:', remoteid);
+			socket.disconnect();
+			return;
+		}
+
+		if (remoteid === this.uuid) {
+			console.log('Connected to myself. :(');
+			socket.disconnect();
+			return;
+		}
+
+		if (this.uuid > remoteid) { // Högst UUID får bestämma om detta är en duplicate.
+			console.log('I am the great one.');
+			if (typeof (this._remotes[remoteid]) !== 'undefined') {
+				console.log(remoteid + ' is already a remote. :(');
+				socket.disconnect();
+				return;
+			}
+			socket.send(this.protocolVersionString + '_letsgo');
+			addRemote(remoteid, socket);
+		} else {
+			console.log('I am NOT the great one.');
+			socket.once('message', function (msg) {
+				if (msg !== this.protocolVersionString + '_letsgo') {
+					console.log('Protocol error #2:' + msg);
+					socket.disconnect();
+					return;
+				} else {
+					console.log('Lets go!');
+				}
+				addRemote(remoteid, socket);
+			}.bind(this));
+		}
+
 	}.bind(this));
+
+	socket.send(this.protocolVersionString + '_init;' + this.uuid);
 };
 
 P2PChannels.prototype.listen = function (port, callback) {
 
 	this.port = port;
 
-	console.log('Listen for incomming connections at port ' + port);
+	//console.log('Listen for incomming connections at port ' + port);
 
 	var io = socketio.listen(port);
 	io.sockets.on("connection", function (socket) {
-		console.log('Got incoming connection at port ' + port);
-		this._handshakeSocket(socket);
+		//console.log('Got incoming connection at port ' + port);
+		this._handshakeSocket(socket, "server");
 	}.bind(this));
 
 	if (typeof (callback) === 'function') {
@@ -106,7 +149,7 @@ P2PChannels.prototype.stopDiscover = function (subject) {
 		return false;
 	}
 	this.subjects.splice(index, 1);
-	this.emit('removeDiscoverySubject', subject);
+	this.emit('removeDiscoverSubject', subject);
 	return true;
 };
 

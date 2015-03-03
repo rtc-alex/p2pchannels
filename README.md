@@ -29,16 +29,14 @@ Now, BitTorrent DHT will be used for announcing and trying to find others. Note,
 
 When another server is found, they will do some handshaking, and when the connection is established, an event will emit with an object representing the remote:
 
-	p2pChannels.on('remote', function (remoteObj) {
+	p2pChannels.on('remote', function (remoteid, socket) {
 
 		// The remote has an unique identifier:
-		console.log('Connection to remote ' + remoteObj.uuid + ' established.');
+		console.log('Connection to remote ' + remoteid + ' established.');
 
-		remoteObj.on('data', function (data) {
-			console.log(data); // Received message from remote.
-		});
-		remoteObj.send('Hello how are you?'); // Send message to remote.
+		// socket is the socket.io socket connected to the remote.
 
+		socket.send('Hello, dude!');
 	});
 
 More discover strings can be added later:
@@ -57,7 +55,7 @@ Implementing new discovery services
 
 A discovery service object must have a .start() method that takes one (1) argument: the p2pChannels object. When running .start(), it should add all p2pChannels' subject strings, checking the .subjects property of the p2pChannels object. Further, it should listen for the addDiscoverSubject event, which is emitted on new subjects. There is also a removeDiscoverySubject event.
 
-When the discovery service finds another host to connect to, it should emit the event 'discovery' with two arguments. The first argument should be the IP address and the second argument should be the port.
+When the discovery service finds another host to connect to, it should emit the event 'discovery' with three arguments. The first argument should be the IP address and the second argument should be the port. The third argument should be the subject that was used for this discovery.
 
 
 
