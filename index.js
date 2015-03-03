@@ -1,7 +1,7 @@
 var
 	EventEmitter = require('events').EventEmitter,
-	socketio = require("socket.io"),
-	socketioClient = require('socket.io-client'),
+	net = require('net'),
+	Remote = require('./lib/remote.js'),
 	util = require('util'),
 	uuid = require('node-uuid');
 
@@ -39,17 +39,14 @@ P2PChannels.prototype.connect = function (ip, port) {
 	port = parseInt(port);
 	var addr = ip + ':' + port;
 
-	var socket = socketioClient.connect('http://' + addr);
-	socket.on('connect_error', function () {
-		//console.log('connect_error', addr, arguments);
-	});
-	socket.on('connect_timeout', function () {
-		//console.log('connect_timeout', arguments);
-	});
-	socket.on('connect', function () {
+	var socket = net.connect({ port: port }, function () {
 		//console.log('socketioClient connect.');
-		this._handshakeSocket(socket, "client");
+		this._handshakeRemote(new Remote(socket), "client");
 	}.bind(this));
+	socket.on('error', function () {
+		console.log(arguments);
+	});
+
 };
 
 P2PChannels.prototype.discover = function (subject) {
@@ -61,66 +58,95 @@ P2PChannels.prototype.discover = function (subject) {
 	return true;
 };
 
-P2PChannels.prototype._handshakeSocket = function (socket, role) {
+P2PChannels.prototype._addRemote = function (remoteid, remote, connId, remoteConnId) {
+	remote.on('end', function () {
+		console.log(connId, 'Removed ' + remoteid + ' from remotes.');
+		delete(this._remotes[remoteid]);
+	}.bind(this));
+	console.log(connId, 'Added ' + remoteid + ' to remotes.');
+	this._remotes[remoteid] = remote;
+	this.emit('remote', remoteid, remote);
+};
+
+P2PChannels.prototype._handshakeRemote = function (remote, role) {
 	// role is "client" or "server".
 
-	var addRemote = function (remoteid, socket) {
-		console.log('Added ' + remoteid + ' to remotes.');
-		this._remotes[remoteid] = socket;
-		this.emit('remote', remoteid, socket);
-		socket.on('message', function (msg) {
-			this.emit('message', remoteid, socket, msg);
-		}.bind(this));
-		socket.send(this.protocolVersionString + '_letsgo');
-	}.bind(this);
+	var connId = uuid.v4();
+	//console.log(connId, 'new connection');
 
-	socket.once('message', function (msg) {
-		//console.log('message', arguments);
-		var msg = msg.split(';', 2);
-		var remoteid = msg[1];
-		if (msg[0] !== this.protocolVersionString + '_init') {
-			console.log('Protocol error #1.');
-			socket.disconnect();
-			return;
-		}
-		if (!verifyRFC4122UUID(remoteid)) {
-			//console.log('Not a valid RFC 4122 UUID:', remoteid);
-			socket.disconnect();
-			return;
-		}
+	var state = 'wait_for_init';
+	var remoteid;
+	var remoteConnId;
 
-		if (remoteid === this.uuid) {
-			console.log('Connected to myself. :(');
-			socket.disconnect();
-			return;
-		}
+	remote.on('message', function (msg) {
+		var msg = msg.split(';');
 
-		if (this.uuid > remoteid) { // Högst UUID får bestämma om detta är en duplicate.
-			console.log('I am the great one.');
-			if (typeof (this._remotes[remoteid]) !== 'undefined') {
-				console.log(remoteid + ' is already a remote. :(');
-				socket.disconnect();
+		if (state === 'wait_for_init') {
+
+			if (msg[0] !== this.protocolVersionString + '_init' || msg.length < 3) {
+				//console.log(connId, 'Protocol error #1.');
+				remote.end();
+				state = 'disconnected';
 				return;
 			}
-			socket.send(this.protocolVersionString + '_letsgo');
-			addRemote(remoteid, socket);
-		} else {
-			console.log('I am NOT the great one.');
-			socket.once('message', function (msg) {
-				if (msg !== this.protocolVersionString + '_letsgo') {
-					console.log('Protocol error #2:' + msg);
-					socket.disconnect();
+
+			remoteid = msg[1];
+			if (!verifyRFC4122UUID(remoteid)) {
+				//console.log(connId, 'Not a valid RFC 4122 UUID:', remoteid);
+				remote.end();
+				state = 'disconnected';
+				return;
+			}
+
+			var remoteConnId = msg[2];
+			if (!verifyRFC4122UUID(remoteConnId)) {
+				//console.log(connId, 'Not a valid RFC 4122 UUID:', remoteid);
+				remote.end();
+				state = 'disconnected';
+				return;
+			}
+			
+			if (remoteid === this.uuid) {
+				//console.log(connId, 'Connected to myself. :(');
+				remote.end();
+				state = 'disconnected';
+				return;
+			}
+
+			if (this.uuid > remoteid) { // Högst UUID får bestämma om detta är en duplicate.
+				//console.log(connId, 'I am the great one.');
+				if (typeof (this._remotes[remoteid]) !== 'undefined') {
+					//console.log(connId, remoteid + ' is already a remote. :(');
+					remote.end();
+					state = 'disconnected';
 					return;
-				} else {
-					console.log('Lets go!');
 				}
-				addRemote(remoteid, socket);
-			}.bind(this));
+				remote.send(this.protocolVersionString + '_letsgo');
+				//console.log('addRemote GO');
+				this._addRemote(remoteid, remote, connId, remoteConnId);
+				state = 'handshake_finished';
+			} else {
+				// console.log(connId, 'I am NOT the great one.');
+				state = 'wait_for_letsgo';
+			}
+
+		} else if (state === 'wait_for_letsgo') {
+			if (msg[0] !== this.protocolVersionString + '_letsgo') {
+				// console.log(connId, 'Protocol error #2:' + msg);
+				remote.end();
+				state = 'disconnected';
+				return;
+			} 
+			state = 'handshake_finished';
+			//console.log('addRemote NGO');
+			this._addRemote(remoteid, remote, connId, remoteConnId);
 		}
 
 	}.bind(this));
 
-	socket.send(this.protocolVersionString + '_init;' + this.uuid);
+	var initStr = this.protocolVersionString + '_init;' + this.uuid + ';' + connId;
+	//console.log(connId, 'sending: ' + initStr);
+	remote.send(initStr);
 };
 
 P2PChannels.prototype.listen = function (port, callback) {
@@ -129,17 +155,20 @@ P2PChannels.prototype.listen = function (port, callback) {
 
 	//console.log('Listen for incomming connections at port ' + port);
 
-	var io = socketio.listen(port);
-	io.sockets.on("connection", function (socket) {
-		//console.log('Got incoming connection at port ' + port);
-		this._handshakeSocket(socket, "server");
-	}.bind(this));
-
-	if (typeof (callback) === 'function') {
-		process.nextTick(function () {
-			callback(null);
+	var server = net.createServer(function (socket) {
+		//console.log('client connected');
+		socket.on('end', function () {
+			//console.log('client disconnected');
 		});
-	}
+		this._handshakeRemote(new Remote(socket), "server");
+	}.bind(this));
+	server.listen(this.port, function() { //'listening' listener
+		if (typeof (callback) === 'function') {
+			process.nextTick(function () {
+				callback(null);
+			});
+		}
+	});
 
 };
 
